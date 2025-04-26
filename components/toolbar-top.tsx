@@ -46,15 +46,20 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { motion } from "framer-motion"
+import { useEffect, useState } from "react"
 
-interface ToolbarTopProps {
+export function ToolbarTop({
+  onToggleLeftPanel,
+  onToggleRightPanel,
+}: {
   onToggleLeftPanel: () => void
   onToggleRightPanel: () => void
-}
-
-export function ToolbarTop({ onToggleLeftPanel, onToggleRightPanel }: ToolbarTopProps) {
-  const { setTheme, theme } = useTheme()
+}) {
+  const { setTheme, theme: currentTheme } = useTheme()
   const { toast } = useToast()
+  const [mounted, setMounted] = useState(false)
+  const [theme, setLocalTheme] = useState<string | undefined>(undefined)
+
   const {
     activeTool,
     setActiveTool,
@@ -83,11 +88,33 @@ export function ToolbarTop({ onToggleLeftPanel, onToggleRightPanel }: ToolbarTop
     setOpacity,
   } = useWhiteboard()
 
+  // After mounting, we have access to the theme
+  useEffect(() => {
+    setMounted(true)
+    setLocalTheme(currentTheme)
+  }, [currentTheme])
+
   const handleShare = () => {
     toast({
       title: "Share link copied!",
       description: "Collaboration link has been copied to clipboard.",
     })
+  }
+
+  const handleThemeToggle = () => {
+    const newTheme = theme === "dark" ? "light" : "dark"
+    setLocalTheme(newTheme)
+    setTheme(newTheme)
+  }
+
+  // Render a placeholder during SSR to avoid hydration mismatch
+  if (!mounted) {
+    return (
+      <div className="flex flex-wrap items-center p-2 border-b border-border bg-white dark:bg-gray-900 sticky top-0 z-10 shadow-md">
+        {/* Placeholder content */}
+        <div className="h-9 w-9"></div>
+      </div>
+    )
   }
 
   return (
@@ -438,15 +465,7 @@ export function ToolbarTop({ onToggleLeftPanel, onToggleRightPanel }: ToolbarTop
 
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => {
-                  const newTheme = theme === "dark" ? "light" : "dark"
-                  setTheme(newTheme)
-                }}
-                className="h-9 w-9 p-0"
-              >
+              <Button variant="ghost" size="icon" onClick={handleThemeToggle} className="h-9 w-9 p-0">
                 {theme === "dark" ? <SunMedium className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </Button>
             </TooltipTrigger>

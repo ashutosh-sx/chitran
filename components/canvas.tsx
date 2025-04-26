@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useWhiteboard } from "@/context/whiteboard-context"
 import { useToast } from "@/hooks/use-toast"
+import { StickerPicker } from "./sticker-picker"
 
 export function Canvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -44,6 +45,7 @@ export function Canvas() {
   const [editingTextId, setEditingTextId] = useState<string | null>(null)
   const [showStickerPicker, setShowStickerPicker] = useState(false)
   const [stickerPosition, setStickerPosition] = useState({ x: 0, y: 0 })
+  const [eraserCursor, setEraserCursor] = useState<{ x: number; y: number; size: number } | null>(null)
 
   // Function to redraw the canvas
   const redrawCanvas = useCallback(
@@ -81,9 +83,19 @@ export function Canvas() {
         drawSelectionHandles(ctx, selectedObject)
       }
 
+      // Draw eraser cursor if active
+      if (eraserCursor && activeTool === "eraser") {
+        ctx.beginPath()
+        ctx.arc(eraserCursor.x, eraserCursor.y, eraserCursor.size / 2, 0, Math.PI * 2)
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.3)"
+        ctx.stroke()
+        ctx.fillStyle = "rgba(255, 255, 255, 0.2)"
+        ctx.fill()
+      }
+
       ctx.restore()
     },
-    [objects, selectedObject, showGrid, zoom, isDrawing, editingTextId],
+    [objects, selectedObject, showGrid, zoom, isDrawing, editingTextId, eraserCursor, activeTool],
   )
 
   // Initialize canvas
@@ -134,7 +146,9 @@ export function Canvas() {
 
     return () => {
       input.removeEventListener("change", handleImageUploadEvent)
-      document.body.removeChild(input)
+      if (document.body.contains(input)) {
+        document.body.removeChild(input)
+      }
     }
   }, [])
 
@@ -184,6 +198,9 @@ export function Canvas() {
 
   // Handle sticker selection
   const handleStickerSelect = (stickerUrl: string) => {
+    // Use placeholder SVG instead of missing sticker images
+    const placeholderUrl = `/placeholder.svg?height=60&width=60&text=${stickerUrl.split("/").pop()?.split(".")[0] || "sticker"}`
+
     const img = new Image()
     img.crossOrigin = "anonymous"
     img.onload = () => {
@@ -194,7 +211,7 @@ export function Canvas() {
         y: stickerPosition.y,
         width: 60,
         height: 60,
-        src: stickerUrl,
+        src: placeholderUrl,
         opacity: opacity,
       }
 
@@ -211,7 +228,7 @@ export function Canvas() {
       // Switch back to select tool after inserting sticker
       setActiveTool("select")
     }
-    img.src = stickerUrl
+    img.src = placeholderUrl
   }
 
   // Redraw canvas when objects change
@@ -219,13 +236,31 @@ export function Canvas() {
     redrawCanvas()
   }, [objects, selectedObject, showGrid, zoom, redrawCanvas])
 
+  // Clean up text input when component unmounts
+  useEffect(() => {
+    return () => {
+      if (textInputRef.current && textInputRef.current.parentNode) {
+        try {
+          textInputRef.current.parentNode.removeChild(textInputRef.current)
+        } catch (error) {
+          console.log("Text area already removed from DOM")
+        }
+        textInputRef.current = null
+      }
+    }
+  }, [])
+
   // Create text editing functionality
   const createTextEditor = useCallback(
     (x: number, y: number, existingText = "", existingId = null) => {
       if (textInputRef.current) {
         // Remove any existing text input
         if (textInputRef.current.parentNode) {
-          textInputRef.current.parentNode.removeChild(textInputRef.current)
+          try {
+            textInputRef.current.parentNode.removeChild(textInputRef.current)
+          } catch (error) {
+            console.log("Text area already removed from DOM")
+          }
         }
         textInputRef.current = null
       }
@@ -253,7 +288,14 @@ export function Canvas() {
       textArea.style.overflow = "hidden"
       textArea.value = existingText
 
+      // Create a separate variable to track if blur has been handled
+      let blurHandled = false
+
       const handleBlur = () => {
+        // Prevent multiple executions of blur handler
+        if (blurHandled) return
+        blurHandled = true
+
         const text = textArea.value.trim()
         if (text) {
           if (existingId) {
@@ -287,8 +329,13 @@ export function Canvas() {
           }
         }
 
-        if (textArea.parentNode) {
-          textArea.parentNode.removeChild(textArea)
+        // Check if the textArea is still in the DOM and has a parent before removing
+        if (textArea && textArea.parentNode) {
+          try {
+            textArea.parentNode.removeChild(textArea)
+          } catch (error) {
+            console.log("Text area already removed from DOM")
+          }
         }
         textInputRef.current = null
         redrawCanvas()
@@ -442,6 +489,7 @@ export function Canvas() {
           strokeWidth: strokeWidth * 2,
         }
         setCurrentShape(newPath)
+        setEraserCursor({ x: snappedX, y: snappedY, size: strokeWidth * 2 })
       } else if (activeTool === "text") {
         // Create text input at position
         createTextEditor(snappedX, snappedY)
@@ -452,6 +500,12 @@ export function Canvas() {
       const { x, y } = getCanvasPoint(e)
       const snappedX = snapToGridPoint(x)
       const snappedY = snapToGridPoint(y)
+
+      // Update eraser cursor position when hovering with eraser tool
+      if (activeTool === "eraser" && !isDrawing) {
+        setEraserCursor({ x: snappedX, y: snappedY, size: strokeWidth * 2 })
+        redrawCanvas()
+      }
 
       // Handle resizing
       if (resizing && selectedObject) {
@@ -496,30 +550,12 @@ export function Canvas() {
           }
           setCurrentShape(updatedShape)
 
+          // Update eraser cursor position
+          setEraserCursor({ x: snappedX, y: snappedY, size: updatedShape.strokeWidth })
+
           // Find objects that intersect with the eraser
           const eraserWidth = updatedShape.strokeWidth
           const objectsToRemove = []
-
-          // Draw temporary eraser cursor for visual feedback
-          const canvas = canvasRef.current
-          if (canvas) {
-            const ctx = canvas.getContext("2d")
-            if (ctx) {
-              // Redraw everything first
-              redrawCanvas()
-
-              // Then draw the eraser cursor
-              ctx.save()
-              ctx.scale(zoom, zoom)
-              ctx.beginPath()
-              ctx.arc(snappedX, snappedY, eraserWidth / 2, 0, Math.PI * 2)
-              ctx.strokeStyle = "rgba(0, 0, 0, 0.3)"
-              ctx.stroke()
-              ctx.fillStyle = "rgba(255, 255, 255, 0.2)"
-              ctx.fill()
-              ctx.restore()
-            }
-          }
 
           // Check each object for intersection with the eraser
           objects.forEach((obj, index) => {
@@ -593,6 +629,9 @@ export function Canvas() {
             const newObjects = objects.filter((_, index) => !objectsToRemove.includes(index))
             setObjects(newObjects)
           }
+
+          // Redraw with updated objects
+          redrawCanvas()
         }
       } else if (activeTool === "rectangle" || activeTool === "ellipse") {
         const width = Math.abs(snappedX - startX)
@@ -717,16 +756,25 @@ export function Canvas() {
       }
     }
 
+    const handleMouseLeave = () => {
+      // Clear eraser cursor when mouse leaves canvas
+      if (activeTool === "eraser") {
+        setEraserCursor(null)
+        redrawCanvas()
+      }
+      handleMouseUp()
+    }
+
     canvas.addEventListener("mousedown", handleMouseDown)
     canvas.addEventListener("mousemove", handleMouseMove)
     canvas.addEventListener("mouseup", handleMouseUp)
-    canvas.addEventListener("mouseleave", handleMouseUp)
+    canvas.addEventListener("mouseleave", handleMouseLeave)
 
     return () => {
       canvas.removeEventListener("mousedown", handleMouseDown)
       canvas.removeEventListener("mousemove", handleMouseMove)
       canvas.removeEventListener("mouseup", handleMouseUp)
-      canvas.removeEventListener("mouseleave", handleMouseUp)
+      canvas.removeEventListener("mouseleave", handleMouseLeave)
     }
   }, [
     activeTool,
@@ -755,10 +803,8 @@ export function Canvas() {
     createTextEditor,
     setActiveTool,
     setObjects,
+    redrawCanvas,
   ])
-
-  // Add touch event support to the canvas component
-  // Add this after the existing mouse event handlers useEffect
 
   // Handle touch events for mobile devices
   useEffect(() => {
@@ -860,6 +906,7 @@ export function Canvas() {
             strokeWidth: strokeWidth * 2,
           }
           setCurrentShape(newPath)
+          setEraserCursor({ x: snappedX, y: snappedY, size: strokeWidth * 2 })
         } else if (activeTool === "text") {
           // Create text input at position
           createTextEditor(snappedX, snappedY)
@@ -899,6 +946,11 @@ export function Canvas() {
       const { x, y } = getCanvasTouch(e)
       const snappedX = snapToGridPoint(x)
       const snappedY = snapToGridPoint(y)
+
+      // Update eraser cursor position
+      if (activeTool === "eraser") {
+        setEraserCursor({ x: snappedX, y: snappedY, size: strokeWidth * 2 })
+      }
 
       // Handle resizing
       if (resizing && selectedObject) {
@@ -946,27 +998,6 @@ export function Canvas() {
           // Find objects that intersect with the eraser
           const eraserWidth = updatedShape.strokeWidth
           const objectsToRemove = []
-
-          // Draw temporary eraser cursor for visual feedback
-          const canvas = canvasRef.current
-          if (canvas) {
-            const ctx = canvas.getContext("2d")
-            if (ctx) {
-              // Redraw everything first
-              redrawCanvas()
-
-              // Then draw the eraser cursor
-              ctx.save()
-              ctx.scale(zoom, zoom)
-              ctx.beginPath()
-              ctx.arc(snappedX, snappedY, eraserWidth / 2, 0, Math.PI * 2)
-              ctx.strokeStyle = "rgba(0, 0, 0, 0.3)"
-              ctx.stroke()
-              ctx.fillStyle = "rgba(255, 255, 255, 0.2)"
-              ctx.fill()
-              ctx.restore()
-            }
-          }
 
           // Check each object for intersection with the eraser
           objects.forEach((obj, index) => {
@@ -1040,6 +1071,9 @@ export function Canvas() {
             const newObjects = objects.filter((_, index) => !objectsToRemove.includes(index))
             setObjects(newObjects)
           }
+
+          // Redraw with updated objects
+          redrawCanvas()
         }
       } else if (activeTool === "rectangle" || activeTool === "ellipse") {
         const width = Math.abs(snappedX - startX)
@@ -1139,6 +1173,11 @@ export function Canvas() {
 
     const handleTouchEnd = (e: TouchEvent) => {
       isPinching = false
+
+      // Clear eraser cursor when touch ends
+      if (activeTool === "eraser") {
+        setEraserCursor(null)
+      }
 
       if (resizing) {
         setResizing(false)
@@ -1323,7 +1362,7 @@ export function Canvas() {
       case "doubleArrow":
         // Check if point is close to the line
         const lineDistance = distanceToLine(x, y, object.x, object.y, object.x2, object.y2)
-        return lineDistance <= 5 // 5px tolerance
+        return lineDistance <= Math.max(5, object.strokeWidth / 2) // Increased tolerance for lines
       case "triangle":
         // Check if point is inside triangle
         return isPointInTriangle(x, y, object.x, object.y, object.x2, object.y2, object.x3, object.y3)
@@ -1347,7 +1386,7 @@ export function Canvas() {
             object.points[i].x,
             object.points[i].y,
           )
-          if (lineDistance <= object.strokeWidth / 2) return true
+          if (lineDistance <= Math.max(5, object.strokeWidth / 2)) return true
         }
         return false
       default:
@@ -1727,8 +1766,9 @@ export function Canvas() {
     ctx.lineTo(toX - headlen * Math.cos(angle - Math.PI / 6), toY - headlen * Math.sin(angle - Math.PI / 6))
     ctx.moveTo(toX, toY)
     ctx.lineTo(toX - headlen * Math.cos(angle + Math.PI / 6), toY - headlen * Math.sin(angle + Math.PI / 6))
-    ctx.fillStyle = color
-    ctx.fill()
+    ctx.lineWidth = width
+    ctx.strokeStyle = color
+    ctx.stroke()
   }
 
   // Draw double arrow
@@ -1760,8 +1800,9 @@ export function Canvas() {
     ctx.lineTo(toX - headlen * Math.cos(angle - Math.PI / 6), toY - headlen * Math.sin(angle - Math.PI / 6))
     ctx.moveTo(toX, toY)
     ctx.lineTo(toX - headlen * Math.cos(angle + Math.PI / 6), toY - headlen * Math.sin(angle + Math.PI / 6))
-    ctx.fillStyle = color
-    ctx.fill()
+    ctx.lineWidth = width
+    ctx.strokeStyle = color
+    ctx.stroke()
 
     // Draw the arrow head at the start
     ctx.beginPath()
@@ -1769,8 +1810,9 @@ export function Canvas() {
     ctx.lineTo(fromX + headlen * Math.cos(angle - Math.PI / 6), fromY + headlen * Math.sin(angle - Math.PI / 6))
     ctx.moveTo(fromX, fromY)
     ctx.lineTo(fromX + headlen * Math.cos(angle + Math.PI / 6), fromY + headlen * Math.sin(angle + Math.PI / 6))
-    ctx.fillStyle = color
-    ctx.fill()
+    ctx.lineWidth = width
+    ctx.strokeStyle = color
+    ctx.stroke()
   }
 
   // Draw hexagon
@@ -1919,32 +1961,8 @@ export function Canvas() {
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden" ref={containerRef}>
       <canvas ref={canvasRef} className="absolute cursor-crosshair" />
       {showStickerPicker && (
-        <div className="absolute left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 bg-white p-4 shadow-md">
-          <div className="mb-2 text-sm font-medium">Select a Sticker</div>
-          <div className="flex flex-wrap gap-2">
-            {[
-              "/stickers/like.png",
-              "/stickers/love.png",
-              "/stickers/haha.png",
-              "/stickers/wow.png",
-              "/stickers/sad.png",
-              "/stickers/angry.png",
-            ].map((stickerUrl) => (
-              <img
-                key={stickerUrl}
-                src={stickerUrl || "/placeholder.svg"}
-                alt="Sticker"
-                className="h-10 w-10 cursor-pointer rounded-md object-contain p-1 hover:bg-gray-100"
-                onClick={() => handleStickerSelect(stickerUrl)}
-              />
-            ))}
-          </div>
-          <button
-            className="mt-3 block w-full rounded-md border border-gray-300 bg-gray-50 py-2 text-center text-xs font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
-            onClick={() => setShowStickerPicker(false)}
-          >
-            Cancel
-          </button>
+        <div className="absolute left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2">
+          <StickerPicker onSelect={handleStickerSelect} onClose={() => setShowStickerPicker(false)} />
         </div>
       )}
     </div>

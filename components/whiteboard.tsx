@@ -87,7 +87,7 @@ export default function Whiteboard() {
     <ThemeProvider
       attribute="class"
       defaultTheme="light"
-      enableSystem
+      enableSystem={false}
       disableTransitionOnChange
       storageKey="chitran-theme"
     >
